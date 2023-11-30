@@ -11,16 +11,24 @@ from openlineage.client.run import (
     RunState
 )
 
+from openlineage.client.client import OpenLineageClient, OpenLineageClientOptions
+import json
+
 from confluent_kafka import Consumer, KafkaError
 from marquez_client import MarquezClient
+
+from common_utils import get_config
+from constants import CONFIG
+
+config = get_config(CONFIG.DEFAULT_FILENAME)
 
 bootstrap_servers = 'localhost:9092'
 group_id = 'test-consumer-group'
 topic = 'test-topic'
 
 consumer_config = {
-    'bootstrap.servers': bootstrap_servers,
-    'group.id': group_id,
+    'bootstrap.servers': config[CONFIG.KEYS.KAFKA_BOOTSTRAP_SERVERS],
+    'group.id': config[CONFIG.KEYS.KAFKA_GROUP_ID],
     'enable.auto.commit': False
     # Add any other necessary configurations
 }
@@ -32,9 +40,7 @@ consumer.subscribe([topic])
 
 
 # endpoint /api/v1/lineage is specified by default
-url = "http://localhost:5000"
-
-from openlineage.client.client import OpenLineageClient, OpenLineageClientOptions
+url = config[CONFIG.KEYS.MARQUEZ_URL]
 
 client = OpenLineageClient(
     url=url,
@@ -44,33 +50,21 @@ client = OpenLineageClient(
 )
 
 def process_kafka_event(msg) -> bool:
-    # print(f"Received message: {message}")
-
-    from openlineage.client.serde import Serde
-
-    import json
-    import openlineage
 
     message = msg.value().decode('utf-8')
     key = msg.key().decode('utf-8')
 
     # Deserialize the JSON object into an OpenLineage event
     event_dict = json.loads(message)
-    # openlineage_event = openlineage.RunEvent.from_dict(openlineage_event_dict[message])
-    # openlineage_event = openlineage.client.client.from_dict(openlineage_event_dict[message])
-
-    # event_dict = Serde.to_dict(open)
-    # print(event_dict)
 
     print(event_dict)
-    # print(event_dict["type"])
-
     print(key)
 
     # use key, else use attributes from event_dict
     if (key in [ "RunEvent", "JobEvent", "DatasetEvent" ]):
         if key == "RunEvent":
             print("is RunEvent via key")
+            # need to use Enum class instead of string
             eventType = str(event_dict['eventType']).upper()
             event_dict['eventType'] = RunState[eventType]
             openlineage_event = RunEvent(**event_dict)
@@ -110,8 +104,7 @@ def process_kafka_event(msg) -> bool:
     if (response.status_code == 201):
         return True
     
-    # skipped processing, serialized event is returned
-    # TODO: try to create DatasetEvent, should return 200
+    # Marquez skipped processing, serialized event is returned
     if (response.status_code == 200):
         print(f"unsupported event type by Marquez, event: {response.content}")
         return False
@@ -130,28 +123,26 @@ def process_kafka_event(msg) -> bool:
 
 try:
     while True:
-        msg = consumer.poll(timeout=1000)  # Adjust the timeout as needed
+        msg = consumer.poll(timeout=1000) # adjust timeout?
 
         if msg is None:
             continue
         if msg.error():
             if msg.error().code() == KafkaError._PARTITION_EOF:
-                # End of partition event, not an error
+                # end of partition event
                 continue
             else:
                 print(f"Error: {msg.error()}")
                 break
 
-        # Process the Kafka event
         was_successfully_processed = process_kafka_event(msg)
 
         # > Commit the offset to indicate successful processing
         # > how to handle a situation where processing was successful
-        #   (entity was created in Marquez DB), but offset wasn't commited,
-        #   and therefore
+        #   (entity was created in Marquez DB), but offset wasn't commited?
         if was_successfully_processed:
             print("successfully processed message")
-            consumer.commit(asynchronous=False)  # You can set asynchronous=True for asynchronous commits
+            consumer.commit(asynchronous=False) # asynchronous=True or False?
 
 except KeyboardInterrupt:
     print("interupt")

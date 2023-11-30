@@ -1,10 +1,7 @@
 #
 #
-# consumes Kafka messages from a topic, 
-# and uses OpenLineage HTTP client to
-# call Marquez API
-
-from confluent_kafka import Producer
+# creates OpenLineage events, serializes them and pushes them to a Kafka topic
+#
 
 from openlineage.client.run import (
     RunEvent,
@@ -14,7 +11,6 @@ from openlineage.client.run import (
     Dataset,
     OutputDataset,
     InputDataset,
-    JobEvent
 )
 from openlineage.client.client import OpenLineageClient, OpenLineageClientOptions
 from openlineage.client.facet import (
@@ -110,8 +106,8 @@ def runEvents(job_name, sql, inputs, outputs, hour, min, location, duration):
             run=myrun,
             job=myjob,
             producer=PRODUCER,
-            # inputs=inputs,
-            # outputs=outputs,
+            inputs=inputs,
+            outputs=outputs,
         ),
         RunEvent(
             eventType=RunState.COMPLETE,
@@ -119,8 +115,8 @@ def runEvents(job_name, sql, inputs, outputs, hour, min, location, duration):
             run=myrun,
             job=myjob,
             producer=PRODUCER,
-            # inputs=inputs,
-            # outputs=outputs,
+            inputs=inputs,
+            outputs=outputs,
         ),
     )
 
@@ -207,6 +203,16 @@ for i in range(0, 5):
         location,
     )
 
+
+
+
+# ==================[ producer ]====================
+
+from confluent_kafka.error import (KeySerializationError,
+                    ValueSerializationError, KafkaError)
+
+from confluent_kafka import Producer
+
 bootstrap_servers = 'localhost:9092'
 group_id = 'test-consumer-group'
 topic = 'test-topic'
@@ -220,30 +226,59 @@ producer_config = {
 
 producer = Producer(producer_config)
 
-job_1 = job("test_job", "test_sql", "test_location")
-now = datetime.now(timezone.utc)
-schema = "https://github.com/OpenLineage/OpenLineage/blob/main/spec/OpenLineage.json#/definitions/JobEvent"
+# Define a delivery report callback function
+def on_delivery_logic(err, msg):
+    if err is not None:
+        print('Message delivery failed: {}'.format(err))
 
-# job_event_1 = JobEvent(
-#     eventTime=now.isoformat(),
-#     producer="test_producer",
-#     schemaURL=schema,
-#     job=job_1
-#     )
+        # check type of error
+
+        # retry
+        send_message(msg.topic(), msg.key(), msg.value())
+    else:
+        print('Message delivered to {} [{}]'.format(msg.topic(), msg.partition()))
+
+def send_message(topic, key, value):
+    producer.produce(topic, key=key, value=value, on_delivery=on_delivery_logic)
+
+def produce_event_to_kafka(event, eventType="RunEvent"):
+    try:
+        serialized_event = Serde.to_json(event)
+        print("sending event")
+        # print(event)
+        # print(serialized_event)
+        time.sleep(1)
+        # client.emit(event)
+
+        """
+        Raises:
+                BufferError: if the internal producer message queue is full.
+                    (``queue.buffering.max.messages`` exceeded). If this happens
+                    the application should call :py:func:`SerializingProducer.Poll`
+                    and try again.
+
+                KeySerializationError: If an error occurs during key serialization.
+
+                ValueSerializationError: If an error occurs during value serialization.
+
+                KafkaException: For all other errors
+        """
+        send_message(topic, key=eventType, value=serialized_event)
+        
+    except BufferError:
+        pass
+    except KeySerializationError:
+        pass
+    except ValueSerializationError:
+        pass
+    except KafkaError:
+        pass
 
 for event in events[:1]:
-# for event in [job_event_1]:
     from openlineage.client.serde import Serde
 
-    serialized_event = Serde.to_json(event)
-    print("sending event")
-    # print(event)
-    # print(serialized_event)
-    time.sleep(1)
-    # client.emit(event)
-
-    # producer.produce(topic, key='JobEvent', value=serialized_event)
-    producer.produce(topic, key='RunEvent', value=serialized_event)
+    produce_event_to_kafka(event)
+    
 
 producer.flush()
 # producer.close()
